@@ -1,0 +1,24 @@
+# Local dependencies and generated build output
+**/node_modules/
+**/.svelte-kit/
+**/target/
+/app/build/
+/app/src-tauri/gen/
+
+# Executables and packaged downloads belong in GitHub Releases
+*.exe
+*.msi
+*.zip
+
+# Local UI verification images; scanner regression fixtures stay tracked
+/*-preview.png
+/preview.png
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.DS_Store
+Thumbs.db
