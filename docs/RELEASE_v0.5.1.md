@@ -4,8 +4,8 @@ Windows desktop companion for Minesweeper, built with Svelte and Rust.
 
 ## Download
 
-- **Minesweeper Assistant.exe** — portable application; download and run.
-- **Minesweeper Assistant Setup.exe** — Windows installer.
+- **Minesweeper-Assistant.exe** — portable application; download and run.
+- **Minesweeper-Assistant-Setup.exe** — Windows installer.
 - **SHA256SUMS.txt** — checksums for both downloads.
 
 ## Features

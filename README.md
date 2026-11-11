@@ -4,7 +4,7 @@ A working Windows desktop beta with a **Svelte 5** interface and **Rust** algori
 
 ## Open the app
 
-Download the portable **Minesweeper Assistant.exe** or **Minesweeper Assistant Setup.exe** installer from [GitHub Releases](https://github.com/acrawford0000/minesweeper-assistant/releases). The source is in [app](app), with build instructions in [the development guide](app/README.md).
+Download the portable **Minesweeper-Assistant.exe** or **Minesweeper-Assistant-Setup.exe** installer from [GitHub Releases](https://github.com/acrawford0000/minesweeper-assistant/releases). The source is in [app](app), with build instructions in [the development guide](app/README.md).
 
 For the original local workspace, both executables are also in the parent `outputs` folder.
 
