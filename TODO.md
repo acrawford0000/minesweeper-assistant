@@ -1,5 +1,13 @@
 # Minesweeper Assistant Todo
 
+## Version 0.5.2 recognition and accepted scan memory
+
+- [x] Add client-specific light/dark 6/7/8 shapes with held-out scale regression checks.
+- [x] Reuse accepted clues/flags on continuing boards only when tile appearances match.
+- [x] Preserve approval references in saved sessions and migrate older source screenshots.
+- [x] Keep new/changed unreadable tiles in review and avoid learning manual reveals from covered pixels.
+- [x] Verify acceptance, repeated imports, and reopening with the actual Rust engine and Svelte UI.
+
 ## Version 0.5.1 single-key capture controls
 
 - [x] Default the capture binding to Y and support other single letters/digits.

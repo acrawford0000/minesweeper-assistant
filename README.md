@@ -33,7 +33,7 @@ A blank revealed tile is **0**. **S** means safe with its clue still unknown; it
 
 The recognizer is an initial grid/glyph matcher, not a universal trained vision model. It is verified on controlled classic/light/dark fixtures and has been exercised against a browser-rendered classic board. Arbitrary themes, flags, borderless boards, small images, overlays, and unusual fonts may require manual correction. Visual match scores are not calibrated confidence percentages.
 
-Importing a new screenshot replaces the reconstructed board after scanning; automatic alignment and merging with earlier manual corrections remain planned. Undo retains the preceding position. Red seven-segment remaining-flag counters above the board are recognized. Other counter styles still use the manual helper. Loss-screen interpretation, advanced approximate counting, and hidden-clue lookahead are not implemented.
+Importing a new screenshot replaces the reconstructed board after scanning. Accepted clues and flags are reused when the board continues and those individual tiles still have matching appearances. New or changed uncertain cells still require review. Undo retains the preceding position. Red seven-segment remaining-flag counters above the board are recognized. Other counter styles still use the manual helper. Loss-screen interpretation, advanced approximate counting, and hidden-clue lookahead are not implemented.
 
 The solver gives exact odds when it completes, assuming a uniform distribution over mine placements compatible with the accepted clues and total. Hard frontiers stop at a search/time budget; uncomputed values stay blank. Logical deductions remain available without a mine total. Unknown custom game-generation rules can imply a different probability prior.
 
@@ -88,7 +88,7 @@ Clue, flag, and mine-count edits preserve the current zoom and pan in both modes
 
 The center is now almost entirely board: a compact toolbar replaces the large heading/status area, the cell editor and scan-review actions move to the right sidebar, and notifications appear as dismissible toasts. Calculation time, frontier groups, and search nodes remain at the bottom. This layout keeps both sidebars beside the board even in a 900-pixel-wide window.
 
-Successive scans are compared by dimensions, revealed clues, and flags. A likely continuation shows **Continuing board**, with newly revealed and still-covered cell counts. This is a comparison of reconstructed board states, not proof of game identity; it never silently merges old clues into a screenshot.
+Successive scans are compared by dimensions, revealed clues, and flags. A likely continuation shows **Continuing board**, with newly revealed and still-covered cell counts. Scan approvals also compare normalized tile appearances and stable known cells before reusing an accepted clue or flag. Dimensions alone never establish a match.
 
 Rust reuses complete counts for exactly matching frontier constraints in a bounded memory cache. The outside-frontier cells share one probability calculation and formatting step; binomial weights are computed only through the relevant mine count. Their odds are reweighted whenever current information changes, because a still-covered area can have different odds after progress elsewhere. Equal rounded percentages alone are never treated as equivalent constraints.
 

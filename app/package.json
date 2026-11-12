@@ -1,6 +1,6 @@
 {
   "name": "minesweeper-assistant",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Screenshot-based Minesweeper companion with Rust analysis and a Svelte interface.",
   "type": "module",
   "scripts": {

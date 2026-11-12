@@ -13,3 +13,9 @@ test('old confirmed-mine entries migrate to the single trusted flag state',()=>{
  const loaded=readSession(JSON.stringify({...session,board:{...session.board,cells:[0,-1,-3,-4],trustFlags:false}}));
  assert.equal(loaded.board.cells[2],-2);assert.equal(loaded.board.trustFlags,true);
 });
+test('accepted scan appearance and corrections survive a session round trip',()=>{
+ const approvedScan={board:{...session.board,cells:[6,7,-2,0]},rect:{x:12,y:30,width:60,height:60},signatures:Array(4).fill('A'.repeat(260)),data:null};
+ assert.deepEqual(readSession(JSON.stringify({...session,approvedScan})).approvedScan,approvedScan);
+ assert.equal(readSession(JSON.stringify(session)).approvedScan,null);
+ for(const bad of [{...approvedScan,signatures:['short']},{...approvedScan,board:{...approvedScan.board,totalMines:99}},{...approvedScan,rect:{...approvedScan.rect,x:-1}}])assert.equal(readSession(JSON.stringify({...session,approvedScan:bad})).approvedScan,null);
+});

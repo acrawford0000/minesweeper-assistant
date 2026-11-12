@@ -1,6 +1,6 @@
 [package]
 name = "minesweeper-assistant"
-version = "0.5.1"
+version = "0.5.2"
 description = "An interactive Minesweeper companion"
 authors = ["you"]
 edition = "2024"

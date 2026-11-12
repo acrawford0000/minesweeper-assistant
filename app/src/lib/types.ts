@@ -17,8 +17,9 @@ export interface CaptureStatus {region:ScreenRect|null;hotkey:string|null;config
 export interface CapturedRegion {region:ScreenRect;image:string}
 export interface CounterReading {value:number;text:string;rect:Rect;flagCount:number;totalMines:number|null}
 export interface BoardComparison {kind:'same'|'progress'|'different'|'uncertain';preservedKnown:number;newlyRevealed:number;newFlags:number;changedKnown:number;unchangedCovered:number;message:string}
-export interface Scan {rows:number;cols:number;cells:number[];confidence:number[];notes:string[];rect:Rect;message:string;counter?:CounterReading|null;clueColors?:Array<string|null>;autoAccept?:boolean;reviewCells?:number[];reviewReasons?:string[];comparison?:BoardComparison}
-export interface Session {version:1;board:Board;image:string|null;scan:Scan|null;reviewed:boolean;name:string}
+export interface ReviewReference {board:Board;rect:Rect;signatures:string[]|null;data:string|null}
+export interface Scan {rows:number;cols:number;cells:number[];confidence:number[];notes:string[];rect:Rect;message:string;counter?:CounterReading|null;clueColors?:Array<string|null>;autoAccept?:boolean;reviewCells?:number[];reviewReasons?:string[];comparison?:BoardComparison;signatures?:string[];reusedReviews?:number}
+export interface Session {version:1;board:Board;image:string|null;scan:Scan|null;reviewed:boolean;name:string;approvedScan?:ReviewReference|null}
 
 export function readSession(text: string): Session {
   const value = JSON.parse(text);
@@ -29,5 +30,7 @@ export function readSession(text: string): Session {
   if (value.image !== null && (typeof value.image !== 'string' || !/^data:image\/(png|jpeg|webp);base64,/.test(value.image) || value.image.length>28_000_000)) throw new Error('The saved image is invalid or too large.');
   // Recognition metadata is optional and never trusted as board state.
   const scan = value.scan && Array.isArray(value.scan.confidence) && value.scan.confidence.length===b.cells.length && Array.isArray(value.scan.notes) && value.scan.notes.length===b.cells.length ? value.scan : null;
-  return {version:1,board:{...b,cells:b.cells.map((v:number)=>v===-3?-2:v),trustFlags:true,revision:0},image:value.image,scan,reviewed:!!value.reviewed,name:typeof value.name==='string'?value.name.slice(0,120):'Saved board'};
+  const reference=value.approvedScan;
+  const validReference=reference&&reference.board?.rows===b.rows&&reference.board?.cols===b.cols&&Array.isArray(reference.board.cells)&&reference.board.cells.length===b.cells.length&&reference.board.cells.every((v:unknown)=>typeof v==='number'&&Number.isInteger(v)&&v>=-5&&v<=8)&&(reference.board.totalMines===null||(Number.isInteger(reference.board.totalMines)&&reference.board.totalMines>=0&&reference.board.totalMines<=b.cells.length))&&typeof reference.board.trustFlags==='boolean'&&reference.rect&&['x','y','width','height'].every(k=>Number.isInteger(reference.rect[k])&&reference.rect[k]>=0)&&(reference.signatures===null||(Array.isArray(reference.signatures)&&reference.signatures.length===b.cells.length&&reference.signatures.every((s:unknown)=>typeof s==='string'&&s.length<=264)))&&(reference.data===null||(typeof reference.data==='string'&&reference.data.length<=28_000_000&&/^data:image\/(png|jpeg|webp);base64,/.test(reference.data)));
+  return {version:1,board:{...b,cells:b.cells.map((v:number)=>v===-3?-2:v),trustFlags:true,revision:0},image:value.image,scan,reviewed:!!value.reviewed,name:typeof value.name==='string'?value.name.slice(0,120):'Saved board',approvedScan:validReference?reference:null};
 }

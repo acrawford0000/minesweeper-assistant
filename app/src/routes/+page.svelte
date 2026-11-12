@@ -2,7 +2,7 @@
   import { onMount, tick } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import {listen,type UnlistenFn} from '@tauri-apps/api/event';
-  import { readSession, type Board, type Analysis, type Scan, type Session, type Rect, type BoardComparison } from '$lib/types';
+  import { readSession, type Board, type Analysis, type Scan, type Session, type Rect, type BoardComparison, type ReviewReference } from '$lib/types';
   import Settings from '$lib/Settings.svelte';
   import {controlActions,defaultBindings,keyBinding,bindingLabel,bindingOwner} from '$lib/controls';
   import {fitCellText} from '$lib/boardText';
@@ -13,6 +13,8 @@
   let image = $state<string|null>(null);
   let scan = $state<Scan|null>(null);
   let reviewed = $state(true);
+  let approvedScan = $state<ReviewReference|null>(null);
+  function rememberApproval(){if(scan)approvedScan={board:{...board,cells:[...board.cells]},rect:{...scan.rect},signatures:scan.signatures??null,data:scan.signatures?null:image};}
   let name = $state('Sample board');
   let selected = $state<number|null>(null);
   let busy = $state(false);
@@ -110,13 +112,13 @@
   const boardDimensions=$derived(`${board.rows}x${board.cols}`);
   const cropStyle=$derived(cropStart&&cropEnd?{x:Math.min(cropStart.x,cropEnd.x),y:Math.min(cropStart.y,cropEnd.y),width:Math.abs(cropEnd.x-cropStart.x),height:Math.abs(cropEnd.y-cropStart.y)}:null);
 
-  function snapshot():Session {return {version:1,board:{...board,cells:[...board.cells]},image,scan,reviewed,name};}
-  function saveLocal(){try {const s=snapshot();if(s.image && s.image.length>3_000_000)s.image=null;localStorage.setItem('minesweeper-assistant-v1',JSON.stringify(s));}catch {notice='Session is too large for autosave. Use Save session to keep a copy.';}}
+  function snapshot():Session {return {version:1,board:{...board,cells:[...board.cells]},image,scan,reviewed,name,approvedScan};}
+  function saveLocal(){try {const s=snapshot();if(s.image && s.image.length>3_000_000)s.image=null;if(s.approvedScan?.data&&s.approvedScan.data.length>3_000_000)s.approvedScan={...s.approvedScan,data:null};localStorage.setItem('minesweeper-assistant-v1',JSON.stringify(s));}catch {notice='Session is too large for autosave. Use Save session to keep a copy.';}}
   function remember(){history=[...history.slice(-59),snapshot()];future=[];}
-  function apply(s:Session){const revision=board.revision+1;board={...s.board,cells:[...s.board.cells],revision};image=s.image;scan=s.scan;reviewed=s.reviewed;name=s.name;selected=null;crop=null;cropStart=null;cropEnd=null;error='';requestAnimationFrame(()=>{document.querySelector('.left-sidebar')?.scrollTo({top:0});document.querySelector('.right-sidebar')?.scrollTo({top:0});document.querySelector('.board-scroll')?.scrollTo({top:0,left:0});});}
+  function apply(s:Session){const revision=board.revision+1;board={...s.board,cells:[...s.board.cells],revision};image=s.image;scan=s.scan;reviewed=s.reviewed;approvedScan=s.approvedScan??(s.reviewed&&s.scan?{board:{...s.board,cells:s.board.cells.map((v,i)=>s.scan?.cells[i]===-1?-1:v)},rect:s.scan.rect,signatures:s.scan.signatures??null,data:s.scan.signatures?null:s.image}:null);name=s.name;selected=null;crop=null;cropStart=null;cropEnd=null;error='';requestAnimationFrame(()=>{document.querySelector('.left-sidebar')?.scrollTo({top:0});document.querySelector('.right-sidebar')?.scrollTo({top:0});document.querySelector('.board-scroll')?.scrollTo({top:0,left:0});});}
   function undo(){if(!history.length)return;future=[...future,snapshot()];const previous=history.at(-1)!;history=history.slice(0,-1);apply(previous);}
   function redo(){if(!future.length)return;history=[...history,snapshot()];const next=future.at(-1)!;future=future.slice(0,-1);apply(next);}
-  function editCell(value:number){if(selected===null)return;remember();board={...board,cells:board.cells.map((v,i)=>i===selected?value:v),revision:board.revision+1};error='';if(scan){const confidence=[...scan.confidence];confidence[selected]=1;const notes=[...scan.notes];notes[selected]='Manually corrected.';scan={...scan,confidence,notes};}}
+  function editCell(value:number){if(selected===null)return;remember();board={...board,cells:board.cells.map((v,i)=>i===selected?value:v),revision:board.revision+1};error='';if(scan){const confidence=[...scan.confidence];confidence[selected]=1;const notes=[...scan.notes];notes[selected]='Manually corrected.';scan={...scan,confidence,notes};if(reviewed&&approvedScan&&scan.cells[selected]!==-1&&scan.cells[selected]!==0)approvedScan={...approvedScan,board:{...approvedScan.board,cells:approvedScan.board.cells.map((v,i)=>i===selected?value:v)}};}}
   function selectCell(index:number){if(panning)return;selected=index;if(activeTool!==null)editCell(activeTool);}
   function changeMines(value:number|null){remember();board={...board,totalMines:value,revision:board.revision+1};}
   async function useCounter(remaining:number){try{const total=await invoke<number>('mine_total_from_counter',{board:$state.snapshot(board),remaining});changeMines(total);showCounter=false;}catch(cause){error=String(cause);}}
@@ -185,17 +187,17 @@
     if(!image)return;
     const startedRevision=board.revision;const previous=$state.snapshot(board);scanning=true;error='';
     try{
-      const result=await invoke<Scan>('scan_image',{request:{data:image,crop,rows:useGrid?gridRows??null:null,cols:useGrid?gridCols??null:null}});
+      const result=await invoke<Scan>('scan_image',{request:{data:image,crop,rows:useGrid?gridRows??null:null,cols:useGrid?gridCols??null:null,previous:approvedScan?$state.snapshot(approvedScan):null}});
       const accepted=result.autoAccept===true;
       const current:Board={rows:result.rows,cols:result.cols,cells:result.cells,totalMines:accepted?(result.counter?.totalMines??null):null,trustFlags:true,revision:startedRevision+1};
       const comparison=await invoke<BoardComparison>('compare_boards',{previous,current});
       if(board.revision!==startedRevision){notice='The board changed during scanning. Scan again to apply the screenshot.';return;}
-      remember();scan={...result,comparison};useScannedCounter=!!result.counter&&result.counter.totalMines!==null;counterValue=result.counter?.value;gridRows=result.rows;gridCols=result.cols;board=current;reviewed=accepted;
+      remember();scan={...result,comparison};useScannedCounter=!!result.counter&&result.counter.totalMines!==null;counterValue=result.counter?.value;gridRows=result.rows;gridCols=result.cols;board=current;reviewed=accepted;if(accepted)rememberApproval();
       selected=accepted?null:result.cells.findIndex((_,i)=>isUncertain(i));if(selected===-1)selected=null;
       notice=accepted?(comparison.kind==='progress'?'Board updated. '+comparison.newlyRevealed+' more squares revealed.':'Board ready.')+(board.totalMines===null?' Enter total mines for global odds.':' Using '+board.totalMines+' total mines.'):result.message;
     }catch(cause){error=String(cause);showGrid=true;}finally{scanning=false;}
   }
-  async function acceptReview(){if(unresolved){error='Correct unreadable (?) cells before accepting the scan.';return;}try{let total=board.totalMines;if(useScannedCounter&&scan?.counter){total=await invoke<number>('mine_total_from_counter',{board:$state.snapshot(board),remaining:scan.counter.value});}remember();reviewed=true;board={...board,totalMines:total,trustFlags:true,revision:board.revision+1};notice=total===null?'Scan accepted. Set total mines to calculate global probabilities.':`Scan accepted. Using ${total} total mines.`;}catch(cause){error=String(cause);}}
+  async function acceptReview(){if(unresolved){error='Correct unreadable (?) cells before accepting the scan.';return;}try{let total=board.totalMines;if(useScannedCounter&&scan?.counter){total=await invoke<number>('mine_total_from_counter',{board:$state.snapshot(board),remaining:scan.counter.value});}remember();reviewed=true;board={...board,totalMines:total,trustFlags:true,revision:board.revision+1};rememberApproval();notice=total===null?'Scan accepted. Set total mines to calculate global probabilities.':`Scan accepted. Using ${total} total mines.`;}catch(cause){error=String(cause);}}
   function nextUncertain(){if(!scan)return;const start=selected??-1;for(let offset=1;offset<=board.cells.length;offset++){const i=(start+offset)%board.cells.length;if(isUncertain(i)){selected=i;document.getElementById(`cell-${i}`)?.scrollIntoView({block:'nearest',inline:'nearest'});return;}}notice='No ambiguous symbols need review. Blank cells are handled automatically.';}
 
   function imagePoint(event:PointerEvent){const bounds=imageElement!.getBoundingClientRect();return {x:Math.max(0,Math.min(1,(event.clientX-bounds.left)/bounds.width)),y:Math.max(0,Math.min(1,(event.clientY-bounds.top)/bounds.height))};}

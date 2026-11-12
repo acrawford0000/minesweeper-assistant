@@ -11,10 +11,16 @@ All runtime recognition algorithms run in Rust. This is classical computer visio
 7. Read the dominant solid glyph colors of accepted clues and send those colors to Svelte for rendering.
 8. Read a red seven-segment remaining-flags counter above the board, then add reviewed placed flags exactly once when the scan is accepted.
 
+The digit templates include minesweeper.online's light and dark 6/7/8 artwork at four tile sizes, normalized by the same Rust pipeline used for incoming cells. Template hole counts are precomputed once. This improves shape matching without lowering the review threshold.
+
+Accepted scans retain compact per-cell appearance fingerprints alongside the accepted board. Later scans check dimensions, stable known anchors, and changes to known clues before reusing individual unchanged accepted clues/flags. New or changed uncertain tiles still require review, and local consistency checks still run. References survive autosave, session export, and reopening. Older reviewed sessions can derive fingerprints from their saved original screenshot. Manually revealing a cell over an older covered screenshot does not teach that covered image as a digit.
+
 No cloud service receives the screenshot. Colors, shapes, and background evidence complement each other; color alone is not used to infer an arbitrary client's number meanings. The exact solver remains separate from recognition.
 
 ## Verification and limits
 
 Regression coverage includes controlled classic/light/dark fixtures and two real 48 x 33 screenshots at different stages of the same game. The progressed board contains 320 flags, 66 fours, and counter 42, retaining the same total of 362 mines. Tests compare all 1,584 cells and the learned clue colors, not just selected examples.
+
+Additional tests cover client 6/7/8 crops in both themes at 16, 20, 24, 28, 30, 36, and 40 pixels, including three scales absent from the reference set. Review-memory tests cover changed images, invalid references, and newly unreadable cells. A browser workflow using the real Rust engine verifies correction, acceptance, repeat imports, reopening, and migration of older saved sessions; initial uncertainty is deliberately simulated for that workflow.
 
 This does not establish universal client accuracy. Borderless themes, unfamiliar symbols/fonts, unusual fractional scaling, partial boards, and overlays still need broader labeled datasets and evaluation. A trained and calibrated cell classifier remains a future option. Slow scanning by itself cannot restore missing image information or replace validation.

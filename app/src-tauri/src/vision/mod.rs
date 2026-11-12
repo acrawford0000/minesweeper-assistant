@@ -2,7 +2,9 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use image::{ImageReader, RgbImage, imageops::FilterType};
 use serde::{Deserialize, Serialize};
 use std::{io::Cursor, sync::OnceLock};
+mod approval;
 mod counter;
+pub use approval::ReviewReference;
 pub use counter::CounterReading;
 
 #[derive(Clone, Copy, Serialize, Deserialize, Debug)]
@@ -19,6 +21,8 @@ pub struct ScanRequest {
     pub crop: Option<Rect>,
     pub rows: Option<usize>,
     pub cols: Option<usize>,
+    #[serde(default)]
+    pub previous: Option<ReviewReference>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,6 +31,8 @@ pub struct ScanResult {
     pub cols: usize,
     pub cells: Vec<i8>,
     pub confidence: Vec<f64>,
+    pub signatures: Vec<String>,
+    pub reused_reviews: usize,
     pub notes: Vec<String>,
     pub rect: Rect,
     pub message: String,
@@ -40,6 +46,8 @@ pub struct ScanResult {
 struct Template {
     label: i8,
     pixels: Vec<f64>,
+    #[serde(skip)]
+    hole_count: usize,
 }
 static TEMPLATES: OnceLock<Vec<Template>> = OnceLock::new();
 
@@ -410,7 +418,19 @@ struct Tile {
     empty: bool,
     bevel: bool,
 }
-fn classify(img: &RgbImage, rect: Rect) -> Tile {
+fn normalize_points(points: &[(u32, u32)]) -> Vec<f64> {
+    let bx0 = points.iter().map(|p| p.0).min().unwrap();
+    let bx1 = points.iter().map(|p| p.0).max().unwrap();
+    let by0 = points.iter().map(|p| p.1).min().unwrap();
+    let by1 = points.iter().map(|p| p.1).max().unwrap();
+    let mut mask = image::GrayImage::new(bx1 - bx0 + 1, by1 - by0 + 1);
+    for &(x, y) in points {
+        mask.put_pixel(x - bx0, y - by0, image::Luma([255]));
+    }
+    let normalized = image::imageops::resize(&mask, 16, 24, FilterType::Triangle);
+    normalized.pixels().map(|p| p[0] as f64 / 255.0).collect()
+}
+fn background(img: &RgbImage, rect: Rect) -> ([u8; 3], u32, u32, u32, u32) {
     let inset = (rect.width.min(rect.height) as f64 * 0.16).round().max(1.0) as u32;
     let x0 = (rect.x + inset).min(img.width() - 1);
     let y0 = (rect.y + inset).min(img.height() - 1);
@@ -449,6 +469,10 @@ fn classify(img: &RgbImage, rect: Rect) -> Tile {
             bg = color;
         }
     }
+    (bg, x0, y0, x1, y1)
+}
+fn classify(img: &RgbImage, rect: Rect) -> Tile {
+    let (bg, x0, y0, x1, y1) = background(img, rect);
     let sample = |x: u32, y: u32| {
         luminance(
             &img.get_pixel(x.min(img.width() - 1), y.min(img.height() - 1))
@@ -530,16 +554,7 @@ fn classify(img: &RgbImage, rect: Rect) -> Tile {
             };
         }
     }
-    let bx0 = points.iter().map(|p| p.0).min().unwrap();
-    let bx1 = points.iter().map(|p| p.0).max().unwrap();
-    let by0 = points.iter().map(|p| p.1).min().unwrap();
-    let by1 = points.iter().map(|p| p.1).max().unwrap();
-    let mut mask = image::GrayImage::new(bx1 - bx0 + 1, by1 - by0 + 1);
-    for &(x, y) in &points {
-        mask.put_pixel(x - bx0, y - by0, image::Luma([255]));
-    }
-    let normalized = image::imageops::resize(&mask, 16, 24, FilterType::Triangle);
-    let vector: Vec<f64> = normalized.pixels().map(|p| p[0] as f64 / 255.0).collect();
+    let vector = normalize_points(&points);
     let observed_holes = holes(&vector, 16, 24);
     if observed_holes == 0 && open_four(&vector) {
         return Tile {
@@ -551,8 +566,132 @@ fn classify(img: &RgbImage, rect: Rect) -> Tile {
             bevel,
         };
     }
-    let references =
-        TEMPLATES.get_or_init(|| serde_json::from_str(include_str!("digits.json")).unwrap());
+    let references = TEMPLATES.get_or_init(|| {
+        let mut references: Vec<Template> =
+            serde_json::from_str(include_str!("digits.json")).unwrap();
+        for (label, bytes) in [
+            (
+                6,
+                include_bytes!("../../tests/fixtures/client-digits/hd-6-16.png").as_slice(),
+            ),
+            (
+                6,
+                include_bytes!("../../tests/fixtures/client-digits/hd-6-24.png").as_slice(),
+            ),
+            (
+                6,
+                include_bytes!("../../tests/fixtures/client-digits/hd-6-30.png").as_slice(),
+            ),
+            (
+                6,
+                include_bytes!("../../tests/fixtures/client-digits/hd-6-40.png").as_slice(),
+            ),
+            (
+                7,
+                include_bytes!("../../tests/fixtures/client-digits/hd-7-16.png").as_slice(),
+            ),
+            (
+                7,
+                include_bytes!("../../tests/fixtures/client-digits/hd-7-24.png").as_slice(),
+            ),
+            (
+                7,
+                include_bytes!("../../tests/fixtures/client-digits/hd-7-30.png").as_slice(),
+            ),
+            (
+                7,
+                include_bytes!("../../tests/fixtures/client-digits/hd-7-40.png").as_slice(),
+            ),
+            (
+                8,
+                include_bytes!("../../tests/fixtures/client-digits/hd-8-16.png").as_slice(),
+            ),
+            (
+                8,
+                include_bytes!("../../tests/fixtures/client-digits/hd-8-24.png").as_slice(),
+            ),
+            (
+                8,
+                include_bytes!("../../tests/fixtures/client-digits/hd-8-30.png").as_slice(),
+            ),
+            (
+                8,
+                include_bytes!("../../tests/fixtures/client-digits/hd-8-40.png").as_slice(),
+            ),
+            (
+                6,
+                include_bytes!("../../tests/fixtures/client-digits/hdd-6-16.png").as_slice(),
+            ),
+            (
+                6,
+                include_bytes!("../../tests/fixtures/client-digits/hdd-6-24.png").as_slice(),
+            ),
+            (
+                6,
+                include_bytes!("../../tests/fixtures/client-digits/hdd-6-30.png").as_slice(),
+            ),
+            (
+                6,
+                include_bytes!("../../tests/fixtures/client-digits/hdd-6-40.png").as_slice(),
+            ),
+            (
+                7,
+                include_bytes!("../../tests/fixtures/client-digits/hdd-7-16.png").as_slice(),
+            ),
+            (
+                7,
+                include_bytes!("../../tests/fixtures/client-digits/hdd-7-24.png").as_slice(),
+            ),
+            (
+                7,
+                include_bytes!("../../tests/fixtures/client-digits/hdd-7-30.png").as_slice(),
+            ),
+            (
+                7,
+                include_bytes!("../../tests/fixtures/client-digits/hdd-7-40.png").as_slice(),
+            ),
+            (
+                8,
+                include_bytes!("../../tests/fixtures/client-digits/hdd-8-16.png").as_slice(),
+            ),
+            (
+                8,
+                include_bytes!("../../tests/fixtures/client-digits/hdd-8-24.png").as_slice(),
+            ),
+            (
+                8,
+                include_bytes!("../../tests/fixtures/client-digits/hdd-8-30.png").as_slice(),
+            ),
+            (
+                8,
+                include_bytes!("../../tests/fixtures/client-digits/hdd-8-40.png").as_slice(),
+            ),
+        ] {
+            let image = image::load_from_memory(bytes).unwrap().to_rgb8();
+            let rect = Rect {
+                x: 0,
+                y: 0,
+                width: image.width(),
+                height: image.height(),
+            };
+            let (bg, x0, y0, x1, y1) = background(&image, rect);
+            let points: Vec<_> = (y0..y1)
+                .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+                .filter(|&(x, y)| distance(&image.get_pixel(x, y).0, &bg) > 65.0)
+                .collect();
+            if points.len() > 1 {
+                references.push(Template {
+                    label,
+                    pixels: normalize_points(&points),
+                    hole_count: 0,
+                });
+            }
+        }
+        for t in &mut references {
+            t.hole_count = holes(&t.pixels, 16, 24);
+        }
+        references
+    });
     let mut scores = [f64::INFINITY; 9];
     for template in references {
         let mut error = vector
@@ -561,7 +700,7 @@ fn classify(img: &RgbImage, rect: Rect) -> Tile {
             .map(|(a, b)| (a - b).powi(2))
             .sum::<f64>()
             / 384.0;
-        error += observed_holes.abs_diff(holes(&template.pixels, 16, 24)) as f64 * 0.10;
+        error += observed_holes.abs_diff(template.hole_count) as f64 * 0.10;
         // Color is supporting evidence. It never selects a clue without a shape match.
         let fraction = points.len() as f64;
         let favored = if blue as f64 / fraction > 0.65 {
@@ -621,11 +760,11 @@ fn classify(img: &RgbImage, rect: Rect) -> Tile {
     }
 }
 
-pub fn scan(request: ScanRequest) -> Result<ScanResult, String> {
-    if request.data.len() > 28_000_000 {
+fn decode_image(data: &str) -> Result<RgbImage, String> {
+    if data.len() > 28_000_000 {
         return Err("Choose an image smaller than 20 MB.".into());
     }
-    let data = request.data.split(',').next_back().unwrap_or(&request.data);
+    let data = data.split(',').next_back().unwrap_or(data);
     let bytes = STANDARD
         .decode(data)
         .map_err(|_| "Could not read image data.")?;
@@ -648,6 +787,11 @@ pub fn scan(request: ScanRequest) -> Result<ScanResult, String> {
             image::Rgb([0, 1, 2].map(|c| (p[c] as f64 * alpha + 255.0 * (1.0 - alpha)) as u8)),
         );
     }
+    Ok(img)
+}
+
+pub fn scan(request: ScanRequest) -> Result<ScanResult, String> {
+    let img = decode_image(&request.data)?;
     let full = Rect {
         x: 0,
         y: 0,
@@ -761,6 +905,19 @@ pub fn scan(request: ScanRequest) -> Result<ScanResult, String> {
             }
         }
     }
+    let absolute_rect = Rect {
+        x: crop.x + rect.x,
+        y: crop.y + rect.y,
+        ..rect
+    };
+    let signatures = approval::signatures(&img, absolute_rect, rows, cols);
+    let reused_reviews = approval::reuse(
+        request.previous.as_ref(),
+        rows,
+        cols,
+        &signatures,
+        &mut tiles,
+    );
     let mut color_votes: Vec<std::collections::HashMap<[u8; 3], usize>> =
         (0..9).map(|_| std::collections::HashMap::new()).collect();
     for (i, tile) in tiles.iter().enumerate() {
@@ -779,11 +936,7 @@ pub fn scan(request: ScanRequest) -> Result<ScanResult, String> {
                 .map(|(c, _)| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]))
         })
         .collect();
-    let absolute_rect = Rect {
-        x: crop.x + rect.x,
-        y: crop.y + rect.y,
-        ..rect
-    };
+
     let flag_count = tiles.iter().filter(|t| t.state == -2).count();
     let counter = counter::read_counter(&img, absolute_rect, flag_count, rows * cols);
     let cells: Vec<_> = tiles.iter().map(|t| t.state).collect();
@@ -795,6 +948,8 @@ pub fn scan(request: ScanRequest) -> Result<ScanResult, String> {
         cols,
         cells,
         confidence,
+        signatures,
+        reused_reviews,
         notes: tiles.into_iter().map(|t| t.note).collect(),
         rect: absolute_rect,
         counter,
@@ -833,6 +988,7 @@ fn review_gate(
     if !review.is_empty() {
         reasons.push("Some cells are unreadable or their visual matches are ambiguous.".into());
     }
+    let mut inconsistent = false;
     for (i, &value) in cells.iter().enumerate().filter(|(_, v)| **v >= 0) {
         let around = crate::solver::neighbors(i, rows, cols);
         let flags = around
@@ -845,9 +1001,10 @@ fn review_gate(
             .count();
         if flags > value as usize || flags + unknown < value as usize {
             review.push(i);
+            inconsistent = true;
         }
     }
-    if review.iter().any(|&i| cells[i] >= 0) {
+    if inconsistent {
         reasons.push("Detected clues and flags need a consistency review.".into());
     }
     if let Some(counter) = counter {
@@ -868,6 +1025,39 @@ fn review_gate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn client_sixes_sevens_and_eights_are_confident_at_common_scales() {
+        let base =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/client-digits");
+        for theme in ["hd", "hdd"] {
+            for label in [6, 7, 8] {
+                for size in [16, 20, 24, 28, 30, 36, 40] {
+                    let image = image::open(base.join(format!("{theme}-{label}-{size}.png")))
+                        .unwrap()
+                        .to_rgb8();
+                    let tile = classify(
+                        &image,
+                        Rect {
+                            x: 0,
+                            y: 0,
+                            width: size,
+                            height: size,
+                        },
+                    );
+                    assert_eq!(
+                        tile.state, label,
+                        "{theme} {label} at {size}: {}",
+                        tile.note
+                    );
+                    assert!(
+                        tile.score >= 0.8,
+                        "{theme} {label} at {size}: {}",
+                        tile.score
+                    );
+                }
+            }
+        }
+    }
     #[test]
     fn scan_acceptance_requires_confidence_and_consistency() {
         assert!(review_gate(1, 3, &[1, -2, -1], &[0.95; 3], None).0);
@@ -894,7 +1084,8 @@ mod tests {
                 data: "bad".into(),
                 crop: None,
                 rows: None,
-                cols: None
+                cols: None,
+                previous: None,
             })
             .is_err()
         );
@@ -941,6 +1132,7 @@ mod tests {
                 }),
                 rows: Some(9),
                 cols: Some(9),
+                previous: None,
             })
             .unwrap();
             let truth: Vec<i8> = serde_json::from_value(expected["cells"].clone()).unwrap();
@@ -959,6 +1151,7 @@ mod tests {
                 crop: None,
                 rows: None,
                 cols: None,
+                previous: None,
             })
             .unwrap();
             assert_eq!((result.rows, result.cols), (9, 9), "{:?}", result.rect);
@@ -983,6 +1176,7 @@ mod tests {
             crop: None,
             rows: None,
             cols: None,
+            previous: None,
         })
         .unwrap();
         assert_eq!((result.rows, result.cols), (33, 48));
@@ -1014,6 +1208,7 @@ mod tests {
             crop: None,
             rows: None,
             cols: None,
+            previous: None,
         })
         .unwrap();
         assert_eq!((result.rows, result.cols), (33, 48));
