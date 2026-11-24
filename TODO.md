@@ -1,5 +1,14 @@
 # Minesweeper Assistant Todo
 
+## Version 0.5.3 board geometry
+
+- [x] Exclude toolbar/frame strips from detected rows and columns using perpendicular cell-divider evidence.
+- [x] Refit fractional spacing and cross-check row pitch against column pitch.
+- [x] Recover truncated grids only where adjacent strips have actual cell dividers.
+- [x] Preserve real blank/unreadable edge rows; handle a valid 2,500-cell board plus misleading frame lines.
+- [x] Score geometry candidates once rather than repeating recognition during comparisons.
+- [x] Add geometry and screenshot-import regressions for headers, side edges, margins, themes, scaling, and custom boards.
+
 ## Version 0.5.2 recognition and accepted scan memory
 
 - [x] Add client-specific light/dark 6/7/8 shapes with held-out scale regression checks.

@@ -4,8 +4,10 @@ use serde::{Deserialize, Serialize};
 use std::{io::Cursor, sync::OnceLock};
 mod approval;
 mod counter;
+mod grid;
 pub use approval::ReviewReference;
 pub use counter::CounterReading;
+use grid::detect;
 
 #[derive(Clone, Copy, Serialize, Deserialize, Debug)]
 pub struct Rect {
@@ -121,252 +123,6 @@ fn distance(a: &[u8; 3], b: &[u8; 3]) -> f64 {
         + (a[1] as f64 - b[1] as f64).powi(2)
         + (a[2] as f64 - b[2] as f64).powi(2))
     .sqrt()
-}
-
-fn lattice(profile: &[f64]) -> Option<(usize, usize, usize)> {
-    let max = profile.iter().copied().fold(0.0, f64::max);
-    if max < 1.0 {
-        return None;
-    }
-    let mut peaks = Vec::new();
-    for i in 1..profile.len().saturating_sub(1) {
-        if profile[i] < max * 0.18
-            || profile[i] < 1.5
-            || profile[i] < profile[i - 1]
-            || profile[i] < profile[i + 1]
-        {
-            continue;
-        }
-        if let Some(&last) = peaks.last() {
-            if i - last <= 2 {
-                if profile[i] > profile[last] {
-                    peaks.pop();
-                } else {
-                    continue;
-                }
-            }
-        }
-        peaks.push(i);
-    }
-    let mut best = None;
-    let mut best_score = 0.0;
-    // Repeat spacing is inferred from actual edge positions, not difficulty presets.
-    for &start in &peaks {
-        let left = peaks.partition_point(|&p| p <= start + 5);
-        let right = peaks.partition_point(|&p| p <= start + 130);
-        for &next in &peaks[left..right] {
-            let step = (next - start) as f64;
-            let mut count = 1;
-            let mut end = next;
-            let mut strength = profile[start] + profile[next];
-            loop {
-                let expected = start as f64 + (count + 1) as f64 * step;
-                let lo = peaks.partition_point(|&p| (p as f64) < expected - 2.5);
-                let hi = peaks.partition_point(|&p| (p as f64) <= expected + 2.5);
-                let matched = peaks[lo..hi]
-                    .iter()
-                    .copied()
-                    .filter(|&p| p > end)
-                    .max_by(|&a, &b| profile[a].total_cmp(&profile[b]));
-                if let Some(p) = matched {
-                    count += 1;
-                    end = p;
-                    strength += profile[p];
-                } else {
-                    break;
-                }
-                if count >= 100 {
-                    break;
-                }
-            }
-            if count < 3 {
-                continue;
-            }
-            let mut first = start;
-            loop {
-                let expected = first as f64 - step;
-                if expected < 0.0 {
-                    break;
-                }
-                let lo = peaks.partition_point(|&p| (p as f64) < expected - 2.5);
-                let hi = peaks.partition_point(|&p| (p as f64) <= expected + 2.5);
-                let matched = peaks[lo..hi]
-                    .iter()
-                    .copied()
-                    .filter(|&p| p < first)
-                    .max_by(|&a, &b| profile[a].total_cmp(&profile[b]));
-                if let Some(p) = matched {
-                    first = p;
-                    count += 1;
-                    strength += profile[p];
-                } else {
-                    break;
-                }
-                if count >= 100 {
-                    break;
-                }
-            }
-            let score = (count as f64).powf(1.3) * (strength / (count + 1) as f64) * step.sqrt();
-            if score > best_score {
-                best_score = score;
-                best = Some((first, end, count));
-            }
-        }
-    }
-    best.map(|(mut first, mut end, mut count)| {
-        // A tightly cropped screenshot may have no exterior transition at its
-        // boundary. Extend one cell only when the lattice meets that boundary.
-        let step = (end - first) as f64 / count as f64;
-        if (first as f64 - step).abs() <= 2.5 {
-            first = 0;
-            count += 1;
-        } else if first <= 2 {
-            first = 0;
-        }
-        if ((end as f64 + step) - profile.len() as f64).abs() <= 2.5 {
-            end = profile.len();
-            count += 1;
-        } else if profile.len().saturating_sub(end) <= 2 {
-            end = profile.len();
-        }
-        (first, end, count)
-    })
-}
-
-fn detect(image: &RgbImage) -> Result<(Rect, usize, usize), String> {
-    let w = image.width() as usize;
-    let h = image.height() as usize;
-    let caps = [48.0, 64.0, 96.0, 160.0];
-    let mut xp = vec![vec![0.0; w]; caps.len()];
-    let mut yp = vec![vec![0.0; h]; caps.len()];
-    for y in 1..h {
-        for x in 1..w {
-            let p = &image.get_pixel(x as u32, y as u32).0;
-            let dx = distance(p, &image.get_pixel(x as u32 - 1, y as u32).0);
-            let dy = distance(p, &image.get_pixel(x as u32, y as u32 - 1).0);
-            for (k, cap) in caps.iter().enumerate() {
-                xp[k][x] += dx.min(*cap) / h as f64;
-                yp[k][y] += dy.min(*cap) / w as f64;
-            }
-        }
-    }
-    let mut candidates: Vec<(Rect, usize, usize)> = Vec::new();
-    for k in 0..caps.len() {
-        let (Some((x, right, cols)), Some((y, bottom, rows))) = (lattice(&xp[k]), lattice(&yp[k]))
-        else {
-            continue;
-        };
-        if rows * cols > 2500 || (right - x) / cols < 6 || (bottom - y) / rows < 6 {
-            continue;
-        }
-        let candidate = (
-            Rect {
-                x: x as u32,
-                y: y as u32,
-                width: (right - x) as u32,
-                height: (bottom - y) as u32,
-            },
-            rows,
-            cols,
-        );
-        if !candidates.iter().any(|(r, rs, cs)| {
-            r.x == candidate.0.x
-                && r.y == candidate.0.y
-                && r.width == candidate.0.width
-                && r.height == candidate.0.height
-                && *rs == rows
-                && *cs == cols
-        }) {
-            candidates.push(candidate);
-        }
-    }
-    let originals = candidates.clone();
-    for (rect, rows, cols) in originals {
-        let (x, width) = refine_axis(&xp[1], rect.x, rect.width, cols);
-        let (y, height) = refine_axis(&yp[1], rect.y, rect.height, rows);
-        let fitted = Rect {
-            x,
-            y,
-            width,
-            height,
-        };
-        if !candidates.iter().any(|(r, rs, cs)| {
-            r.x == x
-                && r.y == y
-                && r.width == width
-                && r.height == height
-                && *rs == rows
-                && *cs == cols
-        }) {
-            candidates.push((fitted, rows, cols));
-        }
-    }
-    // Strong glyph baselines can mimic a lattice on a nearly completed board.
-    // Compare independent contrast passes by inspecting complete tile crops.
-    let quality = |&(rect, rows, cols): &(Rect, usize, usize)| -> f64 {
-        let stride = (rows * cols / 240).max(1);
-        let mut score = 0.0;
-        let mut count = 0;
-        for i in (0..rows * cols).step_by(stride) {
-            let tile = classify(image, cell_rect(rect, rows, cols, i));
-            score += tile.score - if tile.state == -5 { 0.8 } else { 0.0 };
-            count += 1;
-        }
-        let boundary_strength = |profile: &[f64], start: u32, length: u32, cells: usize| {
-            let max = profile.iter().copied().fold(0.0, f64::max).max(1.0);
-            (1..cells)
-                .map(|i| {
-                    profile
-                        .get(start as usize + i * length as usize / cells)
-                        .copied()
-                        .unwrap_or(0.0)
-                        / max
-                })
-                .sum::<f64>()
-                / (cells - 1).max(1) as f64
-        };
-        score / count as f64
-            + 0.25
-                * (boundary_strength(&xp[1], rect.x, rect.width, cols)
-                    + boundary_strength(&yp[1], rect.y, rect.height, rows))
-    };
-    candidates.into_iter().max_by(|a,b|quality(a).total_cmp(&quality(b))).ok_or("I couldn't verify a reliable board grid. Crop the board and use Adjust grid if needed.".into())
-}
-
-fn refine_axis(profile: &[f64], start: u32, length: u32, cells: usize) -> (u32, u32) {
-    if cells < 2 {
-        return (start, length);
-    }
-    let estimated = length as f64 / cells as f64;
-    let periods = [
-        estimated,
-        (estimated * 4.0).round() / 4.0,
-        (estimated * 2.0).round() / 2.0,
-        estimated.round(),
-    ];
-    let mut best = (start, length);
-    let mut best_score = f64::NEG_INFINITY;
-    for period in periods {
-        for offset in -(estimated * 0.4) as i32..=(estimated * 0.4) as i32 {
-            let origin = start as i32 + offset;
-            if origin < 0 {
-                continue;
-            }
-            let extent = (period * cells as f64).round() as u32;
-            if origin as usize + extent as usize > profile.len() {
-                continue;
-            }
-            let score = (1..cells)
-                .map(|i| profile[(origin as f64 + period * i as f64).round() as usize])
-                .sum::<f64>()
-                / (cells - 1) as f64;
-            if score > best_score {
-                best_score = score;
-                best = (origin as u32, extent);
-            }
-        }
-    }
-    best
 }
 
 fn cell_rect(rect: Rect, rows: usize, cols: usize, index: usize) -> Rect {
@@ -692,6 +448,32 @@ fn classify(img: &RgbImage, rect: Rect) -> Tile {
         }
         references
     });
+    // Color is supporting evidence. It never selects a clue without a shape match.
+    let fraction = points.len() as f64;
+    let favored = if blue as f64 / fraction > 0.65 {
+        Some(if luminance(&bg) > 100.0 {
+            if blue > 0
+                && points
+                    .iter()
+                    .map(|&(x, y)| img.get_pixel(x, y)[2] as usize)
+                    .sum::<usize>()
+                    / points.len()
+                    > 160
+            {
+                1
+            } else {
+                4
+            }
+        } else {
+            1
+        })
+    } else if green as f64 / fraction > 0.65 {
+        Some(2)
+    } else if red as f64 / fraction > 0.65 {
+        Some(3)
+    } else {
+        None
+    };
     let mut scores = [f64::INFINITY; 9];
     for template in references {
         let mut error = vector
@@ -701,32 +483,6 @@ fn classify(img: &RgbImage, rect: Rect) -> Tile {
             .sum::<f64>()
             / 384.0;
         error += observed_holes.abs_diff(template.hole_count) as f64 * 0.10;
-        // Color is supporting evidence. It never selects a clue without a shape match.
-        let fraction = points.len() as f64;
-        let favored = if blue as f64 / fraction > 0.65 {
-            Some(if luminance(&bg) > 100.0 {
-                if blue > 0
-                    && points
-                        .iter()
-                        .map(|&(x, y)| img.get_pixel(x, y)[2] as usize)
-                        .sum::<usize>()
-                        / points.len()
-                        > 160
-                {
-                    1
-                } else {
-                    4
-                }
-            } else {
-                1
-            })
-        } else if green as f64 / fraction > 0.65 {
-            Some(2)
-        } else if red as f64 / fraction > 0.65 {
-            Some(3)
-        } else {
-            None
-        };
         if let Some(label) = favored {
             if template.label == label {
                 error *= 0.78;
@@ -1071,7 +827,7 @@ mod tests {
         for x in (19..=259).step_by(24) {
             p[x] = 30.0;
         }
-        assert_eq!(lattice(&p), Some((19, 259, 10)));
+        assert_eq!(grid::lattice(&p), Some((19, 259, 10)));
     }
     #[test]
     fn rejects_plain_image() {
@@ -1239,5 +995,31 @@ mod tests {
         assert_eq!(counter.value, 42);
         assert_eq!(counter.flag_count, 320);
         assert_eq!(counter.total_mines, Some(362));
+    }
+
+    #[test]
+    fn user_32_by_20_board_has_no_phantom_top_row() {
+        let truth: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/dark-classic-32x20.json"))
+                .unwrap();
+        let result = scan(ScanRequest {
+            data: STANDARD.encode(include_bytes!(
+                "../../tests/fixtures/dark-classic-32x20.png"
+            )),
+            crop: None,
+            rows: None,
+            cols: None,
+            previous: None,
+        })
+        .unwrap();
+        assert_eq!((result.rows, result.cols), (20, 32));
+        let expected: Vec<i8> = serde_json::from_value(truth["cells"].clone()).unwrap();
+        assert_eq!(result.cells, expected);
+        assert!(result.auto_accept, "{:?}", result.review_reasons);
+        assert!(result.review_cells.is_empty());
+        let counter = result.counter.unwrap();
+        assert_eq!(counter.value, 140);
+        assert_eq!(counter.flag_count, 0);
+        assert_eq!(counter.total_mines, Some(140));
     }
 }
